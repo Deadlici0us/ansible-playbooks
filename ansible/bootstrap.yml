@@ -1,0 +1,78 @@
+- name: Bootstrap Fresh VPS
+  hosts: all
+  remote_user: root
+  gather_facts: false
+  vars_files:
+    - vars/secrets.yml
+
+  tasks:
+  - name: Pre-flight - Check OS and Version
+      fail:
+        msg: "This server is running {{ ansible_distribution }} {{ ansible_distribution_version }}. Only Ubuntu 22.04 or higher is supported."
+      when: >
+        ansible_distribution != 'Ubuntu' or 
+        ansible_distribution_version is version('22.04', '<')
+        
+    - name: 1. Create the deploy user
+      user:
+        name: "{{ deploy_user }}"
+        shell: /bin/bash
+        groups: sudo
+        append: yes
+        state: present
+        password: "{{ ansible_become_pass | password_hash('sha512') }}"
+
+    - name: 2. Upload Modern ED25519 Public Key
+      authorized_key:
+        user: "{{ deploy_user }}"
+        state: present
+        key: "{{ lookup('file', '/root/.ssh/id_ed25519.pub') }}"
+        # Wipes all other keys
+        exclusive: yes 
+    
+    - name: 3. Firewall Safety - Pre-allow Ports
+      block:
+        - name: Install UFW
+          apt: { name: ufw, state: present, update_cache: yes }
+
+        - name: Allow SSH on both 22 and 65500 (Safety first!)
+          ufw:
+            rule: allow
+            port: "{{ item }}"
+            proto: tcp
+          loop: ['22', '65500']
+
+        - name: Enable UFW
+          ufw:
+            state: enabled
+            policy: deny
+            direction: incoming
+
+    - name: 4. Full SSH Hardening (Protocol & Crypto)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^Port', line: 'Port 65500' }
+        - { regexp: '^PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+        - { regexp: '^MaxAuthTries', line: 'MaxAuthTries 3' }
+        - { regexp: '^X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^HostKeyAlgorithms', line: 'HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com' }
+        - { regexp: '^KexAlgorithms', line: 'KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org' }
+      notify: Validate and Restart SSH
+
+  handlers:
+    - name: Validate and Restart SSH
+      block:
+        - name: Check SSH configuration for syntax errors
+          command: /usr/sbin/sshd -t
+          changed_when: false
+
+        - name: Restart SSH service
+          service:
+            name: ssh
+            state: restarted

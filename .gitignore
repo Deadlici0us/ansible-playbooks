@@ -1,0 +1,16 @@
+# Ansible & Security
+*.key
+*.pem
+*.vault_pass
+ansible/inventory/hosts.ini
+ansible/vars/secrets.yml
+
+# OS/IDEs
+.DS_Store
+.vscode/
+.idea/
+
+# Local Python/Docker
+__pycache__/
+.env
+.git/
