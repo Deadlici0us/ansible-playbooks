@@ -1,5 +1,5 @@
 - name: Main VPS Configuration
-  hosts: all
+  hosts: vps
   remote_user: "{{ deploy_user }}"  # Now we log in as our new user
   become: true             # Use the Vault password for sudo
   vars_files:
@@ -99,7 +99,7 @@
 
     - name: 5. Folders - Prepare App Directories
       file:
-        path: "/home/"{{ deploy_user }}"/app"
+        path: "/home/{{ deploy_user }}/app"
         state: directory
         owner: "{{ deploy_user }}"
         group: "{{ deploy_user }}"
@@ -112,13 +112,13 @@
             rule: allow
             port: "{{ item }}"
             proto: tcp
-          loop: [ '80', '443', '65500']
+          loop: [ '443', '65500']
 
         - name: Delete Port 22 Rule
           ufw:
             rule: allow
             port: '22'
-            state: absent  # This deletes the specific rule for port 22
+            delete: true
 
         - name: Finalize - Default Deny and Enable
           ufw:

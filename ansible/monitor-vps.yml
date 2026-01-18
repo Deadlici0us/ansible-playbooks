@@ -1,0 +1,46 @@
+- name: Setup and Configure Grafana Cloud Monitoring
+  hosts: vps
+  become: yes
+  vars_files:
+    - vars/secrets.yml
+
+  tasks:
+    - name: 1. Install Grafana GPG Key
+      get_url:
+        url: https://apt.grafana.com/gpg.key
+        dest: /etc/apt/keyrings/grafana.asc
+        mode: '0644'
+
+    - name: 2. Add Grafana Repository
+      copy:
+        dest: /etc/apt/sources.list.d/grafana.list
+        content: "deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main\n"
+        mode: '0644'
+
+    - name: 3. Install Grafana Alloy
+      apt:
+        name: alloy
+        state: present
+        update_cache: yes
+
+    - name: 4. Deploy Alloy Configuration
+      template:
+        src: templates/config.alloy.j2
+        dest: /etc/alloy/config.alloy
+        owner: alloy
+        group: alloy
+        mode: '0640'
+      notify: Restart Alloy
+
+    - name: 5. Permissions - Allow Alloy to read system and docker logs
+      user:
+        name: alloy
+        groups: [adm, docker]
+        append: yes
+
+  handlers:
+    - name: Restart Alloy
+      service:
+        name: alloy
+        state: restarted
+        enabled: yes

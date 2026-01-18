@@ -1,0 +1,62 @@
+// 1. SYSTEM METRICS (CPU, RAM, DISK)
+prometheus.exporter.unix "system" { }
+
+prometheus.scrape "metrics" {
+  targets    = prometheus.exporter.unix.system.targets
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+  scrape_interval = "1m"
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = "{{ grafana_prometheus_url }}"
+    basic_auth {
+      username = "{{ grafana_prometheus_user }}"
+      password = "{{ grafana_cloud_token }}"
+    }
+  }
+}
+
+// 2. DOCKER LOGS (LOKI)
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container_name"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.write.grafana_cloud.receiver]
+  labels = { "app" = "docker" }
+}
+
+// 3. JOURNALCTRL
+
+loki.source.journal "journalctrl" {
+  format_as_json = true
+  forward_to    = [loki.write.grafana_cloud.receiver]
+}
+
+// CLOUD SETTINGS
+
+loki.write "grafana_cloud" {
+  endpoint {
+    url = "{{ grafana_loki_url }}"
+    basic_auth {
+      username = "{{ grafana_loki_user }}"
+      password = "{{ grafana_cloud_token }}"
+    }
+    batch_wait = "1s" 
+    batch_size = "1.5MiB"
+  }
+}
