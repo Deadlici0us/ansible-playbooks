@@ -27,18 +27,34 @@
       template:
         src: templates/config.alloy.j2
         dest: /etc/alloy/config.alloy
-        owner: alloy
-        group: alloy
+        owner: root  # Changed from alloy since the service will run as root
+        group: root
         mode: '0640'
       notify: Restart Alloy
 
-    - name: 5. Permissions - Allow Alloy to read system and docker logs
-      user:
-        name: alloy
-        groups: [adm, docker]
-        append: yes
+    - name: 5. Create systemd override directory for Alloy
+      file:
+        path: /etc/systemd/system/alloy.service.d
+        state: directory
+        mode: '0755'
+
+    - name: 6. Configure Alloy service to run as root for cAdvisor
+      copy:
+        dest: /etc/systemd/system/alloy.service.d/override.conf
+        content: |
+          [Service]
+          User=root
+          Group=root
+        mode: '0644'
+      notify: 
+        - Reload systemd
+        - Restart Alloy
 
   handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
     - name: Restart Alloy
       service:
         name: alloy

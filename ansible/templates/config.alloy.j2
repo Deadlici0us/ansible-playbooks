@@ -15,6 +15,9 @@ prometheus.remote_write "grafana_cloud" {
       password = "{{ grafana_cloud_token }}"
     }
   }
+  external_labels = {
+  host = constants.hostname,
+ }
 }
 
 // 2. DOCKER LOGS (LOKI)
@@ -45,6 +48,17 @@ loki.source.docker "containers" {
 loki.source.journal "journalctrl" {
   format_as_json = true
   forward_to    = [loki.write.grafana_cloud.receiver]
+}
+
+// 4. DOCKER METRICS (cAdvisor)
+prometheus.exporter.cadvisor "docker" {
+  docker_host = "unix:///var/run/docker.sock"
+}
+
+prometheus.scrape "docker_metrics" {
+  targets         = prometheus.exporter.cadvisor.docker.targets
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+  scrape_interval = "1m"
 }
 
 // CLOUD SETTINGS

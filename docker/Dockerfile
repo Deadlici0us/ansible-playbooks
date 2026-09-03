@@ -4,6 +4,7 @@ FROM alpine:3.19
 RUN apk add --no-cache \
     ansible \
     openssh-client \
+    sshpass \
     python3 \
     py3-pip \
     bash

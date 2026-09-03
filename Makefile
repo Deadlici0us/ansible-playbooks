@@ -1,6 +1,6 @@
 # Variables
-USERNAME = deadlicious # <--- Change this to your preferred user
-TIME_ZONE = America/Buenos_Aires # <--- Change this to your time zone, for logs
+USERNAME = deadlicious
+TIME_ZONE = America/Argentina/Buenos_Aires
 IMAGE_NAME = portfolio-ansible
 SSH_KEY_PUB = ~/.ssh/id_ed25519.pub
 

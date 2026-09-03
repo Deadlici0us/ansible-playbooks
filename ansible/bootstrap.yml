@@ -1,18 +1,22 @@
+---
 - name: Bootstrap Fresh VPS
   hosts: all
   remote_user: root
-  gather_facts: false
+  gather_facts: true
   vars_files:
     - vars/secrets.yml
 
   tasks:
-  - name: Pre-flight - Check OS and Version
+    - name: Ensure facts are gathered
+      setup:
+
+    - name: Pre-flight - Check OS and Version
       fail:
         msg: "This server is running {{ ansible_distribution }} {{ ansible_distribution_version }}. Only Ubuntu 22.04 or higher is supported."
       when: >
         ansible_distribution != 'Ubuntu' or 
         ansible_distribution_version is version('22.04', '<')
-        
+
     - name: 1. Create the deploy user
       user:
         name: "{{ deploy_user }}"
@@ -20,22 +24,24 @@
         groups: sudo
         append: yes
         state: present
-        password: "{{ ansible_become_pass | password_hash('sha512') }}"
+        password: "{{ user_password | default(ansible_become_pass) | password_hash('sha512') }}"
 
     - name: 2. Upload Modern ED25519 Public Key
       authorized_key:
         user: "{{ deploy_user }}"
         state: present
         key: "{{ lookup('file', '/root/.ssh/id_ed25519.pub') }}"
-        # Wipes all other keys
-        exclusive: yes 
-    
+        exclusive: yes
+
     - name: 3. Firewall Safety - Pre-allow Ports
       block:
         - name: Install UFW
-          apt: { name: ufw, state: present, update_cache: yes }
+          apt:
+            name: ufw
+            state: present
+            update_cache: yes
 
-        - name: Allow SSH on both 22 and 65500 (Safety first!)
+        - name: Allow SSH on both 22 and 65500
           ufw:
             rule: allow
             port: "{{ item }}"
@@ -48,7 +54,18 @@
             policy: deny
             direction: incoming
 
-    - name: 4. Full SSH Hardening (Protocol & Crypto)
+    - name: 4. Generate all missing SSH host keys (ED25519, RSA, ECDSA)
+      command: ssh-keygen -A
+      changed_when: false
+
+    - name: 5. Disable Systemd SSH Socket Activation (Ubuntu 22.04/24.04 compatibility)
+      systemd:
+        name: ssh.socket
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    - name: 6. Apply Core SSH Hardening (Port 65500 & Password Lockout)
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: "{{ item.regexp }}"
@@ -61,18 +78,13 @@
         - { regexp: '^PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
         - { regexp: '^MaxAuthTries', line: 'MaxAuthTries 3' }
         - { regexp: '^X11Forwarding', line: 'X11Forwarding no' }
-        - { regexp: '^HostKeyAlgorithms', line: 'HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com' }
-        - { regexp: '^KexAlgorithms', line: 'KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org' }
-      notify: Validate and Restart SSH
 
-  handlers:
-    - name: Validate and Restart SSH
-      block:
-        - name: Check SSH configuration for syntax errors
-          command: /usr/sbin/sshd -t
-          changed_when: false
+    - name: 7. Validate SSH configuration syntax
+      command: /usr/sbin/sshd -t
+      changed_when: false
 
-        - name: Restart SSH service
-          service:
-            name: ssh
-            state: restarted
+    - name: 8. Enable and restart standard SSH service
+      systemd:
+        name: ssh
+        state: restarted
+        enabled: true

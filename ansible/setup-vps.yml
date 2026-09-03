@@ -1,50 +1,53 @@
+---
 - name: Main VPS Configuration
   hosts: vps
-  remote_user: "{{ deploy_user }}"  # Now we log in as our new user
-  become: true             # Use the Vault password for sudo
+  remote_user: "{{ deploy_user }}"
+  become: true
   vars_files:
     - vars/secrets.yml
 
   tasks:
     - name: Pre-flight - Check OS and Version
-      fail:
+      ansible.builtin.fail:
         msg: "This server is running {{ ansible_distribution }} {{ ansible_distribution_version }}. Only Ubuntu 22.04 or higher is supported."
       when: >
         ansible_distribution != 'Ubuntu' or 
         ansible_distribution_version is version('22.04', '<')
-  
-    - name: 0. System - Set Timezone
-      timezone:
+
+    - name: 0. System - Set System Timezone
+      community.general.timezone:
         name: "{{ time_zone }}"
-        
-    - name: 1. Connection Check
-      ping:
+
+    - name: 0. System - Write /etc/timezone
+      ansible.builtin.copy:
+        content: "{{ time_zone }}\n"
+        dest: /etc/timezone	
 
     - name: 2. Optimization - Ensure 2GB Swap is Active
       block:
         - name: Check if swap file exists
-          stat:
+          ansible.builtin.stat:
             path: /swapfile
           register: swap_exists
 
         - name: Create and Enable Swap if missing
           block:
             - name: Allocate space for swap (2GB)
-              command: fallocate -l 2G /swapfile
+              ansible.builtin.command: fallocate -l 2G /swapfile
             - name: Set strict permissions
-              file:
+              ansible.builtin.file:
                 path: /swapfile
                 mode: '0600'
                 owner: root
                 group: root
             - name: Format as swap
-              command: mkswap /swapfile
+              ansible.builtin.command: mkswap /swapfile
             - name: Activate swap immediately
-              command: swapon /swapfile
+              ansible.builtin.command: swapon /swapfile
           when: not swap_exists.stat.exists
 
         - name: Ensure swap is permanent in /etc/fstab
-          mount:
+          ansible.builtin.mount:
             name: none
             src: /swapfile
             fstype: swap
@@ -54,21 +57,14 @@
             state: present
 
         - name: Optimize Swappiness (Minimize disk thrashing)
-          sysctl:
+          ansible.builtin.sysctl:
             name: vm.swappiness
             value: '10'
             state: present
             reload: yes
 
-        - name: Ensure swap is permanent in /etc/fstab
-          lineinfile:
-            path: /etc/fstab
-            regexp: '^/swapfile'
-            line: '/swapfile none swap sw 0 0'
-            state: present
-
     - name: 3. Advanced SSH Hardening
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: "{{ item.regexp }}"
         line: "{{ item.line }}"
@@ -87,18 +83,19 @@
         - { regexp: '^X11Forwarding', line: 'X11Forwarding no' }
         - { regexp: '^HostKeyAlgorithms', line: 'HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com' }
         - { regexp: '^KexAlgorithms', line: 'KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org' }
-      notify: Validate and Restart SSH
+      notify:
+        - Check SSH Syntax
+        - Restart SSH Service
 
     - name: 4. Security - Verify Public Key
-      # Ensures your ED25519 key is always the only one authorized
-      authorized_key:
+      ansible.posix.authorized_key:
         user: "{{ deploy_user }}"
         state: present
-        key: "{{ lookup('file', '/root/.ssh/id_ed25519.pub') }}"
+        key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
         exclusive: yes
 
     - name: 5. Folders - Prepare App Directories
-      file:
+      ansible.builtin.file:
         path: "/home/{{ deploy_user }}/app"
         state: directory
         owner: "{{ deploy_user }}"
@@ -108,28 +105,28 @@
     - name: 6. Security - Firewall (UFW)
       block:
         - name: Allow Required Ports (SSH & Web)
-          ufw:
+          community.general.ufw:
             rule: allow
             port: "{{ item }}"
             proto: tcp
-          loop: [ '443', '65500']
+          loop: [ '80', '443', '65500']
 
         - name: Delete Port 22 Rule
-          ufw:
+          community.general.ufw:
             rule: allow
             port: '22'
             delete: true
 
         - name: Finalize - Default Deny and Enable
-          ufw:
+          community.general.ufw:
             state: enabled
             policy: deny
             direction: incoming
-            
+
     - name: 7. Infrastructure - Install and Configure Docker
       block:
         - name: Install prerequisite packages
-          apt:
+          ansible.builtin.apt:
             name:
               - apt-transport-https
               - ca-certificates
@@ -138,19 +135,23 @@
               - lsb-release
             state: present
             update_cache: yes
+          register: apt_status
+          until: apt_status is success
+          retries: 10
+          delay: 12
 
         - name: Add Docker GPG apt Key
-          apt_key:
+          ansible.builtin.apt_key:
             url: https://download.docker.com/linux/ubuntu/gpg
             state: present
 
         - name: Add Docker Repository
-          apt_repository:
+          ansible.builtin.apt_repository:
             repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
             state: present
 
         - name: Install Docker Engine
-          apt:
+          ansible.builtin.apt:
             name:
               - docker-ce
               - docker-ce-cli
@@ -159,38 +160,45 @@
               - docker-compose-plugin
             state: present
             update_cache: yes
+          register: apt_status
+          until: apt_status is success
+          retries: 10
+          delay: 12
 
         - name: Ensure Docker service is started and enabled
-          service:
+          ansible.builtin.service:
             name: docker
             state: started
             enabled: yes
 
-        - name: Add deploy user to docker group (Permit running without sudo)
-          user:
+        - name: Add deploy user to docker group
+          ansible.builtin.user:
             name: "{{ deploy_user }}"
             groups: docker
             append: yes
           notify: Restart Docker
-          
+
     - name: 8. Security - Install and Configure Fail2Ban
       block:
         - name: Install Fail2Ban package
-          apt:
+          ansible.builtin.apt:
             name: fail2ban
             state: present
             update_cache: yes
+          register: apt_status
+          until: apt_status is success
+          retries: 10
+          delay: 12
 
         - name: Create local jail configuration
-          copy:
+          ansible.builtin.copy:
             dest: /etc/fail2ban/jail.local
             content: |
               [DEFAULT]
-              # Ban for 1 hour, look back 10 minutes
               bantime  = 3600
               findtime = 600
               maxretry = 3
-              
+
               [sshd]
               enabled = true
               port    = 65500
@@ -198,16 +206,16 @@
               backend = systemd
           notify: Restart Fail2Ban
 
-    - name: Ensure Fail2Ban is running and enabled
-      service:
-        name: fail2ban
-        state: started
-        enabled: yes
-        
+        - name: Ensure Fail2Ban is running and enabled
+          ansible.builtin.service:
+            name: fail2ban
+            state: started
+            enabled: yes
+
     - name: 9. Maintenance - System Hygiene & Log Management
       block:
-        - name: Configure custom App/Nginx rotation (Weekly OR 50MB)
-          copy:
+        - name: Configure custom App/Nginx rotation
+          ansible.builtin.copy:
             dest: /etc/logrotate.d/portfolio-app
             content: |
               /home/{{ deploy_user }}/app/*.log /var/log/nginx/*.log {
@@ -225,7 +233,7 @@
               }
 
         - name: Configure Global Docker Log Rotation
-          copy:
+          ansible.builtin.copy:
             dest: /etc/docker/daemon.json
             content: |
               {
@@ -238,21 +246,25 @@
           notify: Restart Docker
 
         - name: Cap Systemd Journal at 100MB
-          lineinfile:
+          ansible.builtin.lineinfile:
             path: /etc/systemd/journald.conf
             regexp: '^#?SystemMaxUse='
             line: 'SystemMaxUse=100M'
           notify: Restart Journald
-          
+
     - name: 10. Maintenance - Automated Security & Self-Cleaning
       block:
         - name: Install unattended-upgrades
-          apt:
+          ansible.builtin.apt:
             name: [unattended-upgrades, update-notifier-common]
             state: present
+          register: apt_status
+          until: apt_status is success
+          retries: 10
+          delay: 12
 
         - name: Configure intervals
-          copy:
+          ansible.builtin.copy:
             dest: /etc/apt/apt.conf.d/20auto-upgrades
             content: |
               APT::Periodic::Update-Package-Lists "1";
@@ -260,7 +272,7 @@
               APT::Periodic::AutocleanInterval "7";
 
         - name: Configure Auto-Reboot and Deep Cleaning
-          copy:
+          ansible.builtin.copy:
             dest: /etc/apt/apt.conf.d/50unattended-upgrades
             content: |
               Unattended-Upgrade::Allowed-Origins {
@@ -269,37 +281,34 @@
                   "${distro_id}ESM:${distro_codename}-infra-security";
               };
               
-              # Cleaning logic
               Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
               Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
               Unattended-Upgrade::Remove-Unused-Dependencies "true";
               
-              # Reboot logic
               Unattended-Upgrade::Automatic-Reboot "true";
               Unattended-Upgrade::Automatic-Reboot-Time "04:00";
-            
+
   handlers:
-    - name: Validate and Restart SSH
-      block:
-        - name: Check SSH Syntax
-          command: /usr/sbin/sshd -t
-          changed_when: false
-        - name: Restart SSH Service
-          service:
-            name: ssh
-            state: restarted
-            
+    - name: Check SSH Syntax
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: false
+
+    - name: Restart SSH Service
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+
     - name: Restart Fail2Ban
-      service:
+      ansible.builtin.service:
         name: fail2ban
         state: restarted
-        
+
     - name: Restart Docker
-      service:
+      ansible.builtin.service:
         name: docker
         state: restarted
-        
+
     - name: Restart Journald
-      service:
+      ansible.builtin.service:
         name: systemd-journald
-        state: restarted        
+        state: restarted
